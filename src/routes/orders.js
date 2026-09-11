@@ -236,21 +236,20 @@ router.get('/', authenticate, async (req, res) => {
       : (req.activeBranch ? req.activeBranch._id : (req.user && req.user.role !== 'Super Admin' && req.user.branch ? req.user.branch : null));
 
     if (activeBranchId && activeBranchId !== 'All') {
-      let targetBranchObj = null;
-      if (/^[0-9a-fA-F]{24}$/.test(String(activeBranchId))) {
-        targetBranchObj = await Branch.findById(activeBranchId);
-      } else {
-        targetBranchObj = await Branch.findOne({ name: activeBranchId });
+      const resolveBranch = require('../utils/resolveBranch');
+      const targetBranchObj = await resolveBranch(activeBranchId);
+      if (!targetBranchObj) {
+        return res.json([]);
       }
 
-      const branchNameLower = targetBranchObj ? String(targetBranchObj.name || '').toLowerCase() : String(activeBranchId).toLowerCase();
-      const branchNameArLower = targetBranchObj ? String(targetBranchObj.nameAr || targetBranchObj.arabicName || '').toLowerCase() : '';
+      const branchNameLower = String(targetBranchObj.name || '').toLowerCase();
+      const branchNameArLower = String(targetBranchObj.nameAr || targetBranchObj.arabicName || '').toLowerCase();
 
       const isCarpetBranch = branchNameLower.includes('carpet') || branchNameLower.includes('rug') || branchNameArLower.includes('سجاد');
       const isShoeBranch = branchNameLower.includes('shoe') || branchNameLower.includes('footwear') || branchNameArLower.includes('أحذية') || branchNameArLower.includes('حذاء') || branchNameArLower.includes('جوتي');
       const isWorkshopBranch = branchNameLower.includes('workshop') || branchNameArLower.includes('ورشة');
 
-      const targetId = targetBranchObj ? targetBranchObj._id : activeBranchId;
+      const targetId = targetBranchObj._id;
 
       const orConditions = [
         { branchId: targetId },
@@ -389,41 +388,61 @@ router.post('/', authenticate, requirePermission('create_orders'), async (req, r
       });
     }
 
-    // Generate unique order number (prevent collision)
+    // Get current branch with fallback options
+    const rawBranchId = (req.activeBranch ? req.activeBranch._id : null) || req.body.branchId || req.user.branch;
+    const resolveBranch = require('../utils/resolveBranch');
+    let branchObj = await resolveBranch(rawBranchId);
+    if (!branchObj) {
+      branchObj = await Branch.findOne();
+      if (!branchObj) {
+        return res.status(400).json({ message: 'No branch is configured in the system. Please create a branch first.' });
+      }
+    }
+    const finalBranchId = branchObj._id;
+    const branchName = branchObj.name || '';
+    const cleanLetters = branchName.replace(/[^a-zA-Z]/g, '');
+    const branchPrefix = cleanLetters.length >= 3 
+      ? cleanLetters.slice(0, 3).toUpperCase() 
+      : (cleanLetters.toUpperCase() || 'SYS');
+
+    // Validate or dynamically generate branch-scoped order/invoice number starting from 001
+    const prefixRegex = new RegExp(`^${branchPrefix}-(\\d+)$`);
     let orderNumber = req.body.number;
-    if (orderNumber) {
+
+    if (orderNumber && prefixRegex.test(orderNumber)) {
       const existing = await Order.findOne({ number: orderNumber });
       if (existing) {
         orderNumber = null;
       }
+    } else {
+      orderNumber = null;
     }
 
     if (!orderNumber) {
-      const latestOrder = await Order.findOne().sort({ createdAt: -1 });
-      let nextNum = 1;
-      if (latestOrder && latestOrder.number) {
-        const match = latestOrder.number.match(/MIS-(\d+)/);
-        if (match) {
-          nextNum = parseInt(match[1], 10) + 1;
-        }
-      }
-      orderNumber = `MIS-${String(nextNum).padStart(3, '0')}`;
-      let checkCount = 0;
-      while (await Order.findOne({ number: orderNumber }) && checkCount < 100) {
-        nextNum++;
-        orderNumber = `MIS-${String(nextNum).padStart(3, '0')}`;
-        checkCount++;
-      }
-    }
+      // Find orders for this specific branch to get the highest sequence number
+      const branchOrders = await Order.find({
+        $or: [
+          { branchId: finalBranchId },
+          { number: { $regex: new RegExp(`^${branchPrefix}-\\d+$`) } }
+        ]
+      }).select('number');
 
-    // Get current branch with fallback options
-    let finalBranchId = (req.activeBranch ? req.activeBranch._id : null) || req.body.branchId || req.user.branch;
-    if (!finalBranchId) {
-      const fallbackBranch = await Branch.findOne();
-      if (fallbackBranch) {
-        finalBranchId = fallbackBranch._id;
-      } else {
-        return res.status(400).json({ message: 'No branch is configured in the system. Please create a branch first.' });
+      let maxSeq = 0;
+      branchOrders.forEach(o => {
+        const match = o.number && o.number.match(prefixRegex);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num > maxSeq) maxSeq = num;
+        }
+      });
+
+      let nextNum = maxSeq + 1;
+      orderNumber = `${branchPrefix}-${String(nextNum).padStart(3, '0')}`;
+      let checkCount = 0;
+      while (await Order.findOne({ number: orderNumber }) && checkCount < 1000) {
+        nextNum++;
+        orderNumber = `${branchPrefix}-${String(nextNum).padStart(3, '0')}`;
+        checkCount++;
       }
     }
 

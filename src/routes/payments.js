@@ -51,16 +51,15 @@ router.get('/', authenticate, async (req, res) => {
     let query = {};
 
     if (targetBranchId && targetBranchId !== 'All') {
-      let targetBranchObj = null;
-      if (/^[0-9a-fA-F]{24}$/.test(String(targetBranchId))) {
-        targetBranchObj = await Branch.findById(targetBranchId);
-      } else {
-        targetBranchObj = await Branch.findOne({ name: targetBranchId });
+      const resolveBranch = require('../utils/resolveBranch');
+      const targetBranchObj = await resolveBranch(targetBranchId);
+      if (!targetBranchObj) {
+        return res.json([]);
       }
 
-      const tId = targetBranchObj ? targetBranchObj._id : targetBranchId;
-      const bNameLower = targetBranchObj ? String(targetBranchObj.name || '').toLowerCase() : String(targetBranchId).toLowerCase();
-      const bNameArLower = targetBranchObj ? String(targetBranchObj.nameAr || targetBranchObj.arabicName || '').toLowerCase() : '';
+      const tId = targetBranchObj._id;
+      const bNameLower = String(targetBranchObj.name || '').toLowerCase();
+      const bNameArLower = String(targetBranchObj.nameAr || targetBranchObj.arabicName || '').toLowerCase();
 
       const isCarpetBranch = bNameLower.includes('carpet') || bNameLower.includes('rug') || bNameArLower.includes('سجاد');
       const isShoeBranch = bNameLower.includes('shoe') || bNameLower.includes('footwear') || bNameArLower.includes('أحذية') || bNameArLower.includes('حذاء') || bNameArLower.includes('جوتي');

@@ -59,15 +59,19 @@ router.get('/', authenticate, async (req, res) => {
 
     const filter = {};
     const Branch = require('../models/Branch');
+    const resolveBranch = require('../utils/resolveBranch');
     const branches = await Branch.find().select('_id');
     const branchIds = branches.map(b => b._id);
 
-    if (selectedBranch) {
-      filter.branch = selectedBranch;
-    } else if (req.activeBranch) {
-      filter.branch = req.activeBranch._id;
-    } else if (req.user.branch) {
-      filter.branch = req.user.branch;
+    const targetBranch = selectedBranch || (req.activeBranch ? req.activeBranch._id : null) || (req.user && req.user.role !== 'Super Admin' ? req.user.branch : null);
+
+    if (targetBranch && targetBranch !== 'All') {
+      const branchDoc = await resolveBranch(targetBranch);
+      if (branchDoc) {
+        filter.branch = branchDoc._id;
+      } else {
+        return res.json([]);
+      }
     } else {
       // For Super Admin: filter out customers of deleted branches, keeping general customers (null branch)
       filter.branch = { $in: [...branchIds, null] };

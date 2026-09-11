@@ -15,21 +15,43 @@ const { authenticate, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
+const resolveBranch = require('../utils/resolveBranch');
+
+// Helper to attach targetBranchId and targetBranchObj to req
+const attachBranchContext = async (req) => {
+  const queryBranch = req.query.branchId || req.headers['x-selected-branch'] || req.headers['x-branch-id'];
+  if (queryBranch && queryBranch !== 'All' && queryBranch !== 'all' && queryBranch !== 'undefined' && queryBranch !== 'null') {
+    const branchDoc = await resolveBranch(queryBranch);
+    req.targetBranchObj = branchDoc;
+    req.targetBranchId = branchDoc ? branchDoc._id : null;
+  } else if (req.user && req.user.role !== 'Super Admin' && req.user.branch) {
+    req.targetBranchId = req.user.branch;
+    const Branch = require('../models/Branch');
+    req.targetBranchObj = await Branch.findById(req.user.branch);
+  } else {
+    req.targetBranchId = null;
+    req.targetBranchObj = null;
+  }
+};
+
 // Helper to apply branch filter based on user role and query parameter
 const applyBranchFilter = (req, baseFilter = {}, isUser = false) => {
-  const queryBranchId = req.query.branchId || req.headers['x-branch-id'];
+  const targetId = req.targetBranchId;
   const field = isUser ? 'branch' : 'branchId';
 
-  if (queryBranchId && queryBranchId !== 'all' && queryBranchId !== 'undefined' && queryBranchId !== 'null') {
-    try {
-      return { ...baseFilter, [field]: new mongoose.Types.ObjectId(queryBranchId) };
-    } catch (e) {
-      console.error('Invalid branchId query parameter:', queryBranchId);
+  if (targetId) {
+    if (isUser) {
+      return { ...baseFilter, branch: targetId };
     }
-  }
-
-  if (req.user.role !== 'Super Admin' && req.user.branch) {
-    return { ...baseFilter, [field]: new mongoose.Types.ObjectId(req.user.branch) };
+    return {
+      ...baseFilter,
+      $or: [
+        { branchId: targetId },
+        { branch: targetId },
+        { sharedBranches: targetId },
+        { transferredTo: targetId }
+      ]
+    };
   }
 
   return baseFilter;
@@ -75,6 +97,7 @@ const normalizeServiceName = (serviceType, dbServices = []) => {
 // @desc    Get metrics for dashboard charts and summaries
 router.get('/dashboard', authenticate, requirePermission('view_reports'), async (req, res) => {
   try {
+    await attachBranchContext(req);
     const { start, end } = req.query;
     
     // Build filters
@@ -398,6 +421,7 @@ router.get('/dashboard', authenticate, requirePermission('view_reports'), async 
 // @desc    Generate specific tabular reports
 router.get('/generate', authenticate, requirePermission('view_reports'), async (req, res) => {
   try {
+    await attachBranchContext(req);
     const { reportType, category, parameter, start, end } = req.query;
     const orderFilter = applyBranchFilter(req, applyDateFilter(start, end, 'date'));
     
@@ -408,6 +432,9 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
        const groups = {};
        orders.forEach(o => {
          const bName = o.branchId ? o.branchId.name : 'Unknown';
+         if (req.targetBranchObj && bName.toLowerCase() !== req.targetBranchObj.name.toLowerCase()) {
+            return;
+         }
          if (req.user.role !== 'Super Admin' && req.user.branch !== (o.branchId && o.branchId._id.toString())) {
             return;
          }
@@ -823,21 +850,12 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
     }
     else if (reportType === 'driver_income') {
        let driverQuery = {};
-       const queryBranchId = req.query.branchId || req.headers['x-branch-id'];
-       let targetBranchId = null;
-       if (queryBranchId && queryBranchId !== 'all' && queryBranchId !== 'undefined' && queryBranchId !== 'null') {
-         targetBranchId = queryBranchId;
-       } else if (req.user.role !== 'Super Admin' && req.user.branch) {
-         targetBranchId = req.user.branch;
-       }
-
-       if (targetBranchId) {
-         const branchObj = await Branch.findById(targetBranchId);
-         if (branchObj) {
-           driverQuery.branch = branchObj.name;
-         } else {
-           driverQuery.branch = 'NON_EXISTENT_BRANCH_TO_PREVENT_LEAK';
-         }
+       if (req.targetBranchObj) {
+         driverQuery.branch = req.targetBranchObj.name;
+       } else if (req.targetBranchId) {
+         const Branch = require('../models/Branch');
+         const branchObj = await Branch.findById(req.targetBranchId);
+         if (branchObj) driverQuery.branch = branchObj.name;
        }
 
        let drivers = await Driver.find(driverQuery);
