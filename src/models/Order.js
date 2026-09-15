@@ -65,9 +65,9 @@ const orderSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: [
-      'Waiting', 'Preparing in shop', 'Preparing in workshop', 'Hold', 
+      'Waiting', 'Preparing in shop', 'Preparing in workshop', 'Ironing', 'Washing',
       'Ready', 'Ready for delivery', 'Ready for shop', 'With Driver', 
-      'Delivered', 'Return', 'Store', 'In Store', 'In Workshop', 'Cancelled'
+      'Delivered', 'Hold', 'Return', 'Store', 'Store 1', 'Store 2', 'In Store', 'In Workshop', 'Cancelled'
     ],
     default: 'Waiting'
   },
@@ -128,6 +128,11 @@ const orderSchema = new mongoose.Schema({
   },
   notes: {
     type: String
+  },
+  packaging: {
+    type: String,
+    enum: ['Normal', 'Folded'],
+    default: 'Normal'
   },
   createdBy: {
     type: String,

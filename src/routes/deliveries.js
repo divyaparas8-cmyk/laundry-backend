@@ -206,7 +206,12 @@ router.put('/:id/status', authenticate, async (req, res) => {
       const order = await Order.findOne({ number: delivery.orderNumber });
       if (order) {
         order.status = 'Delivered';
-        order.paymentStatus = 'Paid';
+        if (req.body.paymentMethod) {
+          order.paymentMethod = req.body.paymentMethod;
+          order.paymentStatus = 'Paid';
+          order.paidAmount = order.totalAmount || order.price || 0;
+          order.remainingAmount = 0;
+        }
         
         // Push timeline update
         const now = new Date();

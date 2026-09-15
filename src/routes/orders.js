@@ -49,6 +49,7 @@ const formatOrder = (order) => {
     isHomeDelivery: isHome,
     deliveryMode: isHome ? 'home' : 'branch',
     notes: order.notes || '',
+    packaging: order.packaging || 'Normal',
     createdBy: order.createdBy,
     branchId: branchIdStr,
     branchName: branchNameStr,
@@ -368,7 +369,7 @@ router.post('/', authenticate, requirePermission('create_orders'), async (req, r
   try {
     const {
       customerId, customerName, serviceType, amount, tax, totalAmount, discountAmount,
-      date, deliveryDate, expectedDeliveryTime, deliveryType, notes, itemDetails, paymentStatus, paymentMethod
+      date, deliveryDate, expectedDeliveryTime, deliveryType, packaging, notes, itemDetails, paymentStatus, paymentMethod
     } = req.body;
 
     if (!customerId || !customerName || !serviceType || amount === undefined || tax === undefined || totalAmount === undefined || !itemDetails) {
@@ -475,6 +476,7 @@ router.post('/', authenticate, requirePermission('create_orders'), async (req, r
       deliveryDate,
       expectedDeliveryTime: expectedDeliveryTime || '',
       deliveryType: deliveryType || 'Branch Pickup',
+      packaging: packaging || 'Normal',
       notes,
       createdBy: req.user.name,
       branchId: finalBranchId,
@@ -644,8 +646,13 @@ router.put('/bulk/status', authenticate, requirePermission(['manage_orders', 'cr
         comment: 'Bulk status update'
       });
 
-      if (status === 'Delivered') {
+      if (req.body.paymentMethod) {
+        order.paymentMethod = req.body.paymentMethod;
         order.paymentStatus = 'Paid';
+        order.paidAmount = order.totalAmount || order.price || 0;
+        order.remainingAmount = 0;
+      } else if (req.body.paymentStatus) {
+        order.paymentStatus = req.body.paymentStatus;
       }
       await order.save();
 
@@ -696,9 +703,13 @@ router.put('/:id/status', authenticate, requirePermission(['manage_orders', 'cre
         comment: holdComment || (deliveryType ? `Status: ${status}, Delivery: ${deliveryType}` : `Status changed to ${status}`)
       });
 
-      // If order gets delivered, update payment status if unpaid, or handle delivery completion links
-      if (status === 'Delivered') {
+      if (req.body.paymentMethod) {
+        order.paymentMethod = req.body.paymentMethod;
         order.paymentStatus = 'Paid';
+        order.paidAmount = order.totalAmount || order.price || 0;
+        order.remainingAmount = 0;
+      } else if (req.body.paymentStatus) {
+        order.paymentStatus = req.body.paymentStatus;
       }
     } else if (holdComment) {
       order.timeline.push({
@@ -889,6 +900,10 @@ router.put('/:id/edit', authenticate, requirePermission('manage_orders'), async 
       order.deliveryDate = req.body.expectedDeliveryDate;
     }
     if (expectedDeliveryTime !== undefined) order.expectedDeliveryTime = expectedDeliveryTime;
+    if (req.body.packaging !== undefined) {
+      order.packaging = req.body.packaging;
+      order.markModified('packaging');
+    }
 
     order.markModified('deliveryType');
     order.markModified('deliveryDate');
