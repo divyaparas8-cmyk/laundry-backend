@@ -251,12 +251,17 @@ router.get('/', authenticate, async (req, res) => {
       const isWorkshopBranch = branchNameLower.includes('workshop') || branchNameArLower.includes('ورشة');
 
       const targetId = targetBranchObj._id;
+      const targetIdStr = targetId.toString();
+      const targetIdVariants = [targetId, targetIdStr];
 
       const orConditions = [
-        { branchId: targetId },
-        { sharedBranches: targetId },
-        { transferredTo: targetId }
+        { branchId: { $in: targetIdVariants } },
+        { transferredTo: { $in: targetIdVariants } }
       ];
+
+      if (isCarpetBranch || isShoeBranch || isWorkshopBranch) {
+        orConditions.push({ sharedBranches: { $in: targetIdVariants } });
+      }
 
       if (isCarpetBranch) {
         orConditions.push({ 'itemDetails.name': { $regex: /carpet|سجاد|rug/i } });
