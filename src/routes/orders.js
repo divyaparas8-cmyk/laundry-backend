@@ -78,6 +78,11 @@ const formatOrder = (order) => {
     isEdited: order.isEdited || false,
     editedAt: order.editedAt || null,
     editedBy: order.editedBy || '',
+    workshopTasks: {
+      washedBy: (order.workshopTasks && order.workshopTasks.washedBy) ? order.workshopTasks.washedBy : '',
+      ironedBy: (order.workshopTasks && order.workshopTasks.ironedBy) ? order.workshopTasks.ironedBy : '',
+      stitchedBy: (order.workshopTasks && order.workshopTasks.stitchedBy) ? order.workshopTasks.stitchedBy : ''
+    },
     createdAt: order.createdAt,
     updatedAt: order.updatedAt
   };
@@ -743,6 +748,14 @@ router.put('/:id/status', authenticate, requirePermission(['manage_orders', 'cre
     order.markModified('deliveryType');
     order.markModified('deliveryDate');
     order.markModified('expectedDeliveryTime');
+
+    if (req.body.workshopTasks) {
+      if (!order.workshopTasks) order.workshopTasks = {};
+      if (req.body.workshopTasks.washedBy !== undefined) order.workshopTasks.washedBy = req.body.workshopTasks.washedBy;
+      if (req.body.workshopTasks.ironedBy !== undefined) order.workshopTasks.ironedBy = req.body.workshopTasks.ironedBy;
+      if (req.body.workshopTasks.stitchedBy !== undefined) order.workshopTasks.stitchedBy = req.body.workshopTasks.stitchedBy;
+      order.markModified('workshopTasks');
+    }
 
     await order.save();
 

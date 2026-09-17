@@ -162,6 +162,11 @@ const orderSchema = new mongoose.Schema({
   transferredBy: {
     type: String
   },
+  workshopTasks: {
+    washedBy: { type: String, default: '' },
+    ironedBy: { type: String, default: '' },
+    stitchedBy: { type: String, default: '' }
+  },
   isEdited: {
     type: Boolean,
     default: false

@@ -911,6 +911,34 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
          };
        });
     }
+    else if (reportType === 'workshop_perf') {
+       const allUsers = await User.find({}).populate('role');
+       let users = allUsers;
+       
+       if (parameter && parameter !== 'All') {
+         users = users.filter(u => u.name === parameter);
+       }
+       const orders = await Order.find(orderFilter);
+
+       data = users.map(u => {
+         const washedOrders = orders.filter(o => o.workshopTasks && o.workshopTasks.washedBy === u.name);
+         const ironedOrders = orders.filter(o => o.workshopTasks && o.workshopTasks.ironedBy === u.name);
+         const stitchedOrders = orders.filter(o => o.workshopTasks && o.workshopTasks.stitchedBy === u.name);
+
+         const washedCount = washedOrders.length;
+         const ironedCount = ironedOrders.length;
+         const stitchedCount = stitchedOrders.length;
+         const totalCount = washedCount + ironedCount + stitchedCount;
+
+         return {
+           name: u.name,
+           washedCount,
+           ironedCount,
+           stitchedCount,
+           totalCount
+         };
+       }).filter(d => d.totalCount > 0); // Only include staff with activity
+    }
     else if (reportType === 'service_revenue') {
        const dbServices = await LaundryService.find();
        const orders = await Order.find(orderFilter);
@@ -956,6 +984,7 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
     res.json({ data });
   } catch (error) {
     console.error('Reports Generate Error:', error);
+    require('fs').writeFileSync('report_error.log', error.stack || error.toString());
     res.status(500).json({ message: 'Internal server error' });
   }
 });

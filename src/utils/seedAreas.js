@@ -113,7 +113,20 @@ const DEFAULT_AREAS = [
   "Wista",
   "Yarmouk",
   "Zahra",
-  "Zoor"
+  "Zoor",
+  "Ardiya",
+  "Sabah Al-Nasser",
+  "Abdullah Al-Mubarak",
+  "Riggae",
+  "Rehab",
+  "Sabahiya",
+  "Hadiya",
+  "Riqqa",
+  "Ali Sabah Al-Salem",
+  "Dajeej",
+  "Mina Abdullah",
+  "Abbasiya",
+  "Shuwaikh Residential"
 ];
 
 const seedAreas = async () => {
