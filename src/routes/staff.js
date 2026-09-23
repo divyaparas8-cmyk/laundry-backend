@@ -115,11 +115,27 @@ const formatUserWithStats = (user, orders, deliveries, pickups, payments) => {
 // @desc    Get all staff/users
 router.get('/', authenticate, requirePermission('manage_staff'), async (req, res) => {
   try {
+    const resolveBranch = require('../utils/resolveBranch');
+    const { branchId } = req.query;
+    const headerBranch = req.headers['x-selected-branch'];
+    const selectedBranch = (headerBranch && headerBranch !== 'All') ? headerBranch : (branchId && branchId !== 'All' ? branchId : null);
+
+    const activeBranchParam = selectedBranch || (req.activeBranch ? req.activeBranch._id : null) || (req.user && req.user.role?.name !== 'Super Admin' && req.user.branch ? req.user.branch : null);
+
     let query = {};
-    if (req.user.branch && mongoose.Types.ObjectId.isValid(req.user.branch)) {
-      query = { $or: [{ branch: req.user.branch }, { branches: req.user.branch }] };
+    if (activeBranchParam && activeBranchParam !== 'All') {
+      const branchDoc = await resolveBranch(activeBranchParam);
+      if (branchDoc) {
+        const bId = branchDoc._id;
+        query = { $or: [{ branch: bId }, { branches: bId }] };
+      } else if (mongoose.Types.ObjectId.isValid(activeBranchParam)) {
+        const bId = new mongoose.Types.ObjectId(activeBranchParam);
+        query = { $or: [{ branch: bId }, { branches: bId }] };
+      } else {
+        return res.json([]);
+      }
     } else {
-      // For Super Admin: filter out staff of deleted branches
+      // For Super Admin or 'All' branches: filter out staff of deleted branches
       const branches = await Branch.find().select('_id');
       const branchIds = branches.map(b => b._id).filter(id => id && mongoose.Types.ObjectId.isValid(id));
       
