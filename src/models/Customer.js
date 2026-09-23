@@ -12,7 +12,6 @@ const customerSchema = new mongoose.Schema({
   phone: {
     type: String,
     required: true,
-    unique: true,
     trim: true
   },
   areaName: {
@@ -119,5 +118,7 @@ const customerSchema = new mongoose.Schema({
     type: String
   }
 }, { timestamps: true });
+
+customerSchema.index({ branch: 1, phone: 1 }, { unique: true });
 
 module.exports = mongoose.model('Customer', customerSchema);

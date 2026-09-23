@@ -500,20 +500,46 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
        data = Object.values(groups);
     }
     else if (reportType === 'customer_list') {
-       let customers = await Customer.find(applyBranchFilter(req, {}, true));
+       let customers = await Customer.find(applyBranchFilter(req, {}, true)).lean();
        if (parameter && parameter !== 'All') {
          customers = customers.filter(c => c._id.toString() === parameter);
        }
-       data = customers.map(c => ({
-         id: c._id,
-         customerId: `CUS-${c._id.toString().substring(c._id.toString().length - 4).toUpperCase()}`,
-         name: c.name,
-         phone: c.phone,
-         registered: c.registrationDate || c.createdAt,
-         discount: c.customerLevel || '0%',
-         ordersCount: c.totalOrders || 0,
-         balance: c.balance || 0
-       }));
+
+       // Aggregate actual order counts dynamically for each customer
+       const customerIds = customers.map(c => c._id);
+       const orderCounts = await Order.aggregate([
+         { $match: { customer: { $in: customerIds } } },
+         { $group: { _id: '$customer', count: { $sum: 1 } } }
+       ]);
+       const orderCountMap = {};
+       orderCounts.forEach(oc => {
+         if (oc._id) orderCountMap[oc._id.toString()] = oc.count;
+       });
+
+       data = customers.map(c => {
+         const cId = c._id.toString();
+         const validCustNo = (c.customerNo && c.customerNo !== 'Auto-generated') ? c.customerNo : '';
+         const displayCustomerId = validCustNo ? `CUS-${validCustNo}` : `CUS-${cId.slice(-4).toUpperCase()}`;
+
+         let discountDisplay = '0%';
+         if (c.customDiscountRate !== undefined && c.customDiscountRate !== null && Number(c.customDiscountRate) > 0) {
+           discountDisplay = `${c.customDiscountRate}%`;
+         } else if (c.customerLevel && typeof c.customerLevel === 'string' && c.customerLevel.trim()) {
+           discountDisplay = c.customerLevel.endsWith('%') ? c.customerLevel : `${c.customerLevel}%`;
+         }
+
+         return {
+           id: c._id,
+           customerId: displayCustomerId,
+           customerNo: validCustNo || displayCustomerId,
+           name: c.name,
+           phone: c.phone,
+           registered: c.registrationDate || c.createdAt,
+           discount: discountDisplay,
+           ordersCount: orderCountMap[cId] || c.invoicesCount || 0,
+           balance: c.balance || 0
+         };
+       });
     }
     else if (reportType === 'top_customers') {
        const orders = await Order.find(orderFilter);
@@ -533,17 +559,25 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
        data = arr.map((c, i) => ({ id: i+1, ...c }));
     }
     else if (reportType === 'customer_debts') {
-       let customers = await Customer.find(applyBranchFilter(req, { balance: { $gt: 0 } }, true)).sort({ balance: -1 });
+       let customers = await Customer.find(applyBranchFilter(req, { balance: { $gt: 0 } }, true)).sort({ balance: -1 }).lean();
        if (parameter && parameter !== 'All') {
          customers = customers.filter(c => c._id.toString() === parameter);
        }
-       data = customers.map(c => ({
-         id: c._id,
-         name: c.name,
-         phone: c.phone,
-         registered: c.registrationDate || c.createdAt,
-         balance: c.balance
-       }));
+       data = customers.map(c => {
+         const cId = c._id.toString();
+         const validCustNo = (c.customerNo && c.customerNo !== 'Auto-generated') ? c.customerNo : '';
+         const displayCustomerId = validCustNo ? `CUS-${validCustNo}` : `CUS-${cId.slice(-4).toUpperCase()}`;
+
+         return {
+           id: c._id,
+           customerId: displayCustomerId,
+           customerNo: validCustNo || displayCustomerId,
+           name: c.name,
+           phone: c.phone,
+           registered: c.registrationDate || c.createdAt,
+           balance: c.balance
+         };
+       });
     }
     else if (reportType === 'completed_jobs' || reportType === 'pending_jobs') {
        const isCompleted = reportType === 'completed_jobs';

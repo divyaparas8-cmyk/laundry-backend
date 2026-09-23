@@ -16,7 +16,7 @@ const driverSchema = new mongoose.Schema({
   },
   mobile: {
     type: String,
-    required: true
+    default: ''
   },
   tel: {
     type: String
@@ -47,19 +47,19 @@ const driverSchema = new mongoose.Schema({
   },
   carNo: {
     type: String,
-    required: true
+    default: ''
   },
   civilId: {
     type: String,
-    required: true
+    default: ''
   },
   nationality: {
     type: String,
-    required: true
+    default: ''
   },
   branch: {
     type: String,
-    required: true // e.g. "Ragheey"
+    default: 'Main'
   },
   status: {
     type: String,

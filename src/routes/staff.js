@@ -7,6 +7,7 @@ const Order = require('../models/Order');
 const Delivery = require('../models/Delivery');
 const Pickup = require('../models/Pickup');
 const Payment = require('../models/Payment');
+const Driver = require('../models/Driver');
 const { authenticate, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
@@ -220,6 +221,62 @@ router.post('/', authenticate, requirePermission('manage_staff'), async (req, re
     });
 
     await user.save();
+
+    // If role is Delivery Staff or Driver, automatically create Driver profile
+    if (role.name === 'Delivery Staff' || role.name === 'Driver') {
+      try {
+        let branchName = '';
+        if (validBranchObjectIds.length > 0) {
+          const bObj = await Branch.findById(validBranchObjectIds[0]);
+          if (bObj) branchName = bObj.name;
+        }
+        if (!branchName && req.user && req.user.branch) {
+          const bObj = await Branch.findById(req.user.branch);
+          if (bObj) branchName = bObj.name;
+        }
+
+        const allDrivers = await Driver.find({});
+        let maxNum = 100;
+        for (const d of allDrivers) {
+          if (d.driverNo) {
+            const match = d.driverNo.match(/DRV-(\d+)/);
+            if (match) {
+              const num = parseInt(match[1], 10);
+              if (num > maxNum) maxNum = num;
+            }
+          }
+        }
+        let nextNum = maxNum + 1;
+        let unique = false;
+        let finalDriverNo = '';
+        while (!unique) {
+          finalDriverNo = `DRV-${nextNum}`;
+          const conflict = await Driver.findOne({ driverNo: finalDriverNo });
+          if (!conflict) {
+            unique = true;
+          } else {
+            nextNum++;
+          }
+        }
+
+        const newDriver = new Driver({
+          user: user._id,
+          driverNo: finalDriverNo,
+          driverName: user.name,
+          mobile: user.phone || '',
+          branch: branchName || 'Main',
+          status: user.status === 'Active' ? 'Available' : 'Off Duty',
+          carNo: '',
+          civilId: '',
+          nationality: '',
+          addressNotes: user.address || '',
+          areas: []
+        });
+        await newDriver.save();
+      } catch (driverErr) {
+        console.error('Error auto-creating driver for staff:', driverErr);
+      }
+    }
     
     // Populate populated fields for formatting
     const populated = await User.findById(user._id).populate('role').populate('branch').populate('branches');
@@ -283,6 +340,71 @@ router.put('/:id', authenticate, requirePermission('manage_staff'), async (req, 
     }
 
     await user.save();
+
+    // Keep linked Driver profile in sync
+    try {
+      let linkedDriver = await Driver.findOne({ user: user._id });
+      if (!linkedDriver) {
+        linkedDriver = await Driver.findOne({ driverName: user.name });
+      }
+
+      if (linkedDriver) {
+        if (name) linkedDriver.driverName = name;
+        if (phone !== undefined) linkedDriver.mobile = phone;
+        if (status) {
+          linkedDriver.status = status === 'Active' ? 'Available' : 'Off Duty';
+        }
+        if (user.branch) {
+          const bObj = await Branch.findById(user.branch);
+          if (bObj) linkedDriver.branch = bObj.name;
+        }
+        if (!linkedDriver.user) linkedDriver.user = user._id;
+        await linkedDriver.save();
+      } else if (roleName === 'Delivery Staff' || roleName === 'Driver') {
+        let branchName = '';
+        if (user.branch) {
+          const bObj = await Branch.findById(user.branch);
+          if (bObj) branchName = bObj.name;
+        }
+        const allDrivers = await Driver.find({});
+        let maxNum = 100;
+        for (const d of allDrivers) {
+          if (d.driverNo) {
+            const match = d.driverNo.match(/DRV-(\d+)/);
+            if (match) {
+              const num = parseInt(match[1], 10);
+              if (num > maxNum) maxNum = num;
+            }
+          }
+        }
+        let nextNum = maxNum + 1;
+        let unique = false;
+        let finalDriverNo = '';
+        while (!unique) {
+          finalDriverNo = `DRV-${nextNum}`;
+          const conflict = await Driver.findOne({ driverNo: finalDriverNo });
+          if (!conflict) unique = true;
+          else nextNum++;
+        }
+        const newDriver = new Driver({
+          user: user._id,
+          driverNo: finalDriverNo,
+          driverName: user.name,
+          mobile: user.phone || '',
+          branch: branchName || 'Main',
+          status: user.status === 'Active' ? 'Available' : 'Off Duty',
+          carNo: '',
+          civilId: '',
+          nationality: '',
+          addressNotes: user.address || '',
+          areas: []
+        });
+        await newDriver.save();
+      }
+    } catch (driverSyncErr) {
+      console.error('Error syncing driver for staff update:', driverSyncErr);
+    }
+
     const populated = await User.findById(user._id).populate('role').populate('branch').populate('branches');
     res.json(formatUser(populated));
   } catch (error) {
@@ -327,6 +449,7 @@ router.delete('/:id', authenticate, requirePermission('manage_staff'), async (re
       return res.status(404).json({ message: 'Staff member not found.' });
     }
 
+    await Driver.deleteMany({ user: user._id });
     await User.deleteOne({ _id: user._id });
     res.json({ message: 'Staff account deleted successfully.' });
   } catch (error) {

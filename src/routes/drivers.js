@@ -93,8 +93,8 @@ router.post('/', authenticate, requirePermission('manage_staff'), async (req, re
       }
     }
 
-    if (!finalDriverNo || !driverName || !mobile || !carNo || !civilId || !nationality || !branch) {
-      return res.status(400).json({ message: 'Missing required driver profile fields.' });
+    if (!finalDriverNo || !driverName || !mobile) {
+      return res.status(400).json({ message: 'Driver Name and Mobile number are required.' });
     }
 
     const existingDriver = await Driver.findOne({ driverNo: finalDriverNo });
@@ -103,23 +103,23 @@ router.post('/', authenticate, requirePermission('manage_staff'), async (req, re
     }
 
     const driver = new Driver({
-      user: userId,
+      user: userId || null,
       driverNo: finalDriverNo,
       driverName,
       mobile,
-      tel,
+      tel: tel || '',
       areas: areas || [],
-      street,
-      part,
-      jadda,
-      houseNo,
-      floor,
-      flat,
-      addressNotes,
-      carNo,
-      civilId,
-      nationality,
-      branch,
+      street: street || '',
+      part: part || '',
+      jadda: jadda || '',
+      houseNo: houseNo || '',
+      floor: floor || '',
+      flat: flat || '',
+      addressNotes: addressNotes || '',
+      carNo: carNo || '',
+      civilId: civilId || '',
+      nationality: nationality || '',
+      branch: branch || 'Main',
       status: status || 'Available'
     });
 

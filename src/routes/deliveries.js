@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const Delivery = require('../models/Delivery');
 const Order = require('../models/Order');
 const { authenticate, requirePermission } = require('../middleware/auth');
@@ -6,6 +7,83 @@ const notify = require('../utils/notify');
 const { updateDriverStatus } = require('../utils/driverStatus');
 
 const router = express.Router();
+
+// Helper: find delivery by MongoDB _id, custom deliveryId string, or synthesized del-order-:id
+const findDelivery = async (id) => {
+  if (!id) return null;
+
+  if (mongoose.Types.ObjectId.isValid(id)) {
+    const doc = await Delivery.findById(id);
+    if (doc) return doc;
+  }
+
+  // Search by custom deliveryId
+  let doc = await Delivery.findOne({ deliveryId: id });
+  if (doc) return doc;
+
+  // Search by orderNumber
+  doc = await Delivery.findOne({ orderNumber: id });
+  if (doc) return doc;
+
+  // If frontend passed synthesized del-order-ID or DEL-ID
+  if (typeof id === 'string' && (id.startsWith('del-order-') || id.startsWith('DEL-'))) {
+    const rawTarget = id.startsWith('del-order-') ? id.replace('del-order-', '') : id.replace('DEL-', '');
+
+    // 1. Check if Delivery exists with this orderNumber or deliveryId
+    doc = await Delivery.findOne({
+      $or: [
+        { deliveryId: id },
+        { deliveryId: `DEL-${rawTarget}` },
+        { orderNumber: rawTarget }
+      ]
+    });
+    if (doc) return doc;
+
+    // 2. Check if the target corresponds to an Order (_id or number)
+    let order = null;
+    if (mongoose.Types.ObjectId.isValid(rawTarget)) {
+      order = await Order.findById(rawTarget);
+    }
+    if (!order) {
+      order = await Order.findOne({ number: rawTarget });
+    }
+
+    // 3. If Order exists, auto-upsert a permanent Delivery document for it!
+    if (order) {
+      // Find latest DEL-xxx sequence to give standard deliveryId
+      const latestDelivery = await Delivery.findOne().sort({ createdAt: -1 });
+      let nextNum = 1;
+      if (latestDelivery && latestDelivery.deliveryId) {
+        const match = latestDelivery.deliveryId.match(/DEL-(\d+)/);
+        if (match) {
+          nextNum = parseInt(match[1], 10) + 1;
+        }
+      }
+      const newDeliveryId = `DEL-${order.number || String(nextNum).padStart(3, '0')}`;
+
+      doc = new Delivery({
+        deliveryId: newDeliveryId,
+        customer: order.customerName || 'Customer',
+        deliveryDate: order.deliveryDate || order.expectedDeliveryDate || order.date || new Date().toISOString().split('T')[0],
+        orderDate: order.date || (order.createdAt ? new Date(order.createdAt).toISOString().split('T')[0] : ''),
+        assignedStaff: '',
+        orderCount: (order.itemDetails && order.itemDetails.length) || 1,
+        status: order.status === 'Delivered' ? 'Delivered' : 'Scheduled',
+        address: order.notes || '',
+        contactNumber: order.customerPhone || '',
+        orderNumber: order.number,
+        areaName: '',
+        createdFromInvoice: true,
+        branchId: order.branchId
+      });
+
+      await doc.save();
+      return doc;
+    }
+  }
+
+  return null;
+};
 
 const formatDelivery = (delivery) => {
   return {
@@ -21,7 +99,8 @@ const formatDelivery = (delivery) => {
     orderNumber: delivery.orderNumber,
     areaName: delivery.areaName || '',
     createdFromInvoice: delivery.createdFromInvoice || false,
-    branchId: delivery.branchId ? delivery.branchId.toString() : ''
+    branchId: delivery.branchId ? delivery.branchId.toString() : '',
+    createdAt: delivery.createdAt
   };
 };
 
@@ -35,23 +114,7 @@ router.get('/', authenticate, async (req, res) => {
 
     if (isDeliveryRole) {
       const staffNames = [req.user.name, req.user.username].filter(Boolean);
-      const orConditions = [{ assignedStaff: { $in: staffNames } }];
-
-      if (effectiveBranchId && !req.isHomeServiceBranch) {
-        const orders = await Order.find({ branchId: effectiveBranchId }).select('number');
-        const orderNumbers = orders.map(o => o.number);
-        orConditions.push({ branchId: effectiveBranchId });
-        if (orderNumbers.length > 0) {
-          orConditions.push({ orderNumber: { $in: orderNumbers } });
-        }
-      } else {
-        orConditions.push({});
-      }
-
-      query = { $or: orConditions };
-      if (orConditions.some(c => Object.keys(c).length === 0)) {
-        query = {};
-      }
+      query = { assignedStaff: { $in: staffNames } };
     } else if (effectiveBranchId && !req.isHomeServiceBranch) {
       const orders = await Order.find({ branchId: effectiveBranchId }).select('number');
       const orderNumbers = orders.map(o => o.number);
@@ -130,7 +193,7 @@ router.put('/:id/assign', authenticate, requirePermission('manage_deliveries'), 
     const { assignedStaff } = req.body;
     const unassign = !assignedStaff || assignedStaff === 'Unassigned';
 
-    const delivery = await Delivery.findById(req.params.id);
+    const delivery = await findDelivery(req.params.id);
     if (!delivery) {
       return res.status(404).json({ message: 'Delivery job not found.' });
     }
@@ -186,7 +249,7 @@ router.put('/:id/status', authenticate, async (req, res) => {
       return res.status(400).json({ message: 'Status or deliveryType is required.' });
     }
 
-    const delivery = await Delivery.findById(req.params.id);
+    const delivery = await findDelivery(req.params.id);
     if (!delivery) {
       return res.status(404).json({ message: 'Delivery job not found.' });
     }

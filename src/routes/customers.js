@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
 const Payment = require('../models/Payment');
@@ -102,26 +103,34 @@ router.post('/', authenticate, requirePermission('manage_customers'), async (req
       return res.status(400).json({ message: 'Phone number is required.' });
     }
 
+    const effectiveBranch = (req.activeBranch ? req.activeBranch._id : null) || branchId || req.body.branch || req.user.branch || null;
+
     const phoneToFind = primaryPhone;
-    const existingCustomer = await Customer.findOne({
+    const phoneFilter = {
       $or: [
         { phone: phoneToFind },
         { phones: phoneToFind }
       ]
-    });
+    };
+    if (effectiveBranch) {
+      phoneFilter.branch = effectiveBranch;
+    }
+    const existingCustomer = await Customer.findOne(phoneFilter);
     if (existingCustomer) {
-      return res.status(400).json({ message: 'A customer with this phone number already exists.' });
+      return res.status(400).json({ message: 'A customer with this phone number already exists in this branch.' });
     }
 
-    // Check email uniqueness if email is provided
+    // Check email uniqueness within branch if email is provided
     if (email && email.trim()) {
-      const existingEmail = await Customer.findOne({ email: email.trim() });
+      const emailFilter = { email: email.trim() };
+      if (effectiveBranch) {
+        emailFilter.branch = effectiveBranch;
+      }
+      const existingEmail = await Customer.findOne(emailFilter);
       if (existingEmail) {
-        return res.status(400).json({ message: 'A customer with this email already exists.' });
+        return res.status(400).json({ message: 'A customer with this email already exists in this branch.' });
       }
     }
-
-    const effectiveBranch = (req.activeBranch ? req.activeBranch._id : null) || branchId || req.body.branch || req.user.branch || null;
 
     let finalCustomerNo = customerNo;
     if (!finalCustomerNo || String(finalCustomerNo).trim() === '' || String(finalCustomerNo).toLowerCase() === 'auto-generated') {
@@ -207,28 +216,38 @@ router.put('/:id', authenticate, requirePermission('manage_customers'), async (r
     const primaryName = englishName || name || arabicName;
     const primaryPhone = (phones && phones[0]) || phone;
 
-    // Check phone uniqueness on update
+    const effectiveBranch = branchId || req.body.branch || customer.branch || (req.activeBranch ? req.activeBranch._id : null) || (req.user && req.user.branch) || null;
+
+    // Check phone uniqueness on update within branch
     if (primaryPhone) {
-      const existingPhone = await Customer.findOne({
+      const phoneFilter = {
         _id: { $ne: customer._id },
         $or: [
           { phone: primaryPhone },
           { phones: primaryPhone }
         ]
-      });
+      };
+      if (effectiveBranch) {
+        phoneFilter.branch = effectiveBranch;
+      }
+      const existingPhone = await Customer.findOne(phoneFilter);
       if (existingPhone) {
-        return res.status(400).json({ message: 'A customer with this phone number already exists.' });
+        return res.status(400).json({ message: 'A customer with this phone number already exists in this branch.' });
       }
     }
 
-    // Check email uniqueness on update
+    // Check email uniqueness on update within branch
     if (email && email.trim()) {
-      const existingEmail = await Customer.findOne({
+      const emailFilter = {
         _id: { $ne: customer._id },
         email: email.trim()
-      });
+      };
+      if (effectiveBranch) {
+        emailFilter.branch = effectiveBranch;
+      }
+      const existingEmail = await Customer.findOne(emailFilter);
       if (existingEmail) {
-        return res.status(400).json({ message: 'A customer with this email already exists.' });
+        return res.status(400).json({ message: 'A customer with this email already exists in this branch.' });
       }
     }
 
@@ -275,17 +294,30 @@ router.put('/:id', authenticate, requirePermission('manage_customers'), async (r
     if (balance !== undefined) customer.balance = balance;
     if (notes !== undefined) customer.notes = notes;
     
-    if (branchId !== undefined) {
-      customer.branch = branchId;
-    } else if (req.body.branch !== undefined) {
-      customer.branch = req.body.branch;
+    const rawBranch = branchId !== undefined ? branchId : req.body.branch;
+    if (rawBranch !== undefined && rawBranch !== null && rawBranch !== '') {
+      if (mongoose.Types.ObjectId.isValid(rawBranch)) {
+        customer.branch = rawBranch;
+      }
+      // If not a valid ObjectId, leave existing branch unchanged
     }
 
     await customer.save();
     res.json(formatCustomer(customer));
   } catch (error) {
     console.error('Update customer error:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(val => val.message);
+      return res.status(400).json({ message: messages.join(', ') });
+    }
+    if (error.name === 'CastError') {
+      return res.status(400).json({ message: `Invalid value for field: ${error.path}` });
+    }
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyValue || {})[0] || 'field';
+      return res.status(400).json({ message: `Customer with this ${field} already exists.` });
+    }
+    res.status(500).json({ message: error.message || 'Internal server error' });
   }
 });
 

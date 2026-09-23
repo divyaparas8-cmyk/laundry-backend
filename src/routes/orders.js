@@ -212,6 +212,15 @@ router.get('/public/:idOrNumber', async (req, res) => {
       formatted.customerPhone = customerObj.phone || (customerObj.phones && customerObj.phones[0]) || '';
       formatted.customerNo = customerObj.customerNo || '';
       formatted.isSubscriber = customerObj.isSubscriber === true || (customerObj.isSubscriber !== false && Number(customerObj.insuranceAmount || 0) >= 20);
+      formatted.areaName = customerObj.areaName || '';
+      formatted.partNo = customerObj.partNo || '';
+      formatted.street = customerObj.street || '';
+      formatted.jadda = customerObj.jadda || '';
+      formatted.houseNo = customerObj.houseNo || '';
+      formatted.levelNo = customerObj.levelNo || '';
+      formatted.flatNo = customerObj.flatNo || '';
+      formatted.paciNo = customerObj.paciNo || '';
+      formatted.addressNotes = customerObj.addressNotes || '';
     }
     if (branchObj) {
       formatted.branchName = branchObj.name;

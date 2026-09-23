@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const Pickup = require('../models/Pickup');
 const Order = require('../models/Order');
 const { authenticate, requirePermission } = require('../middleware/auth');
@@ -6,6 +7,16 @@ const notify = require('../utils/notify');
 const { updateDriverStatus } = require('../utils/driverStatus');
 
 const router = express.Router();
+
+// Helper: find pickup by MongoDB _id OR custom pickupId string
+const findPickup = async (id) => {
+  if (mongoose.Types.ObjectId.isValid(id)) {
+    const doc = await Pickup.findById(id);
+    if (doc) return doc;
+  }
+  // Fallback: search by custom pickupId field
+  return Pickup.findOne({ pickupId: id });
+};
 
 const formatPickup = (pickup) => {
   return {
@@ -34,23 +45,7 @@ router.get('/', authenticate, async (req, res) => {
 
     if (isDeliveryRole) {
       const staffNames = [req.user.name, req.user.username].filter(Boolean);
-      const orConditions = [{ assignedStaff: { $in: staffNames } }];
-
-      if (effectiveBranchId && !req.isHomeServiceBranch) {
-        const orders = await Order.find({ branchId: effectiveBranchId }).select('number');
-        const orderNumbers = orders.map(o => o.number);
-        orConditions.push({ branchId: effectiveBranchId });
-        if (orderNumbers.length > 0) {
-          orConditions.push({ orderNumber: { $in: orderNumbers } });
-        }
-      } else {
-        orConditions.push({});
-      }
-
-      query = { $or: orConditions };
-      if (orConditions.some(c => Object.keys(c).length === 0)) {
-        query = {};
-      }
+      query = { assignedStaff: { $in: staffNames } };
     } else if (effectiveBranchId && !req.isHomeServiceBranch) {
       const orders = await Order.find({ branchId: effectiveBranchId }).select('number');
       const orderNumbers = orders.map(o => o.number);
@@ -130,7 +125,7 @@ router.put('/:id/assign', authenticate, requirePermission('manage_pickups'), asy
     const { assignedStaff } = req.body;
     const unassign = !assignedStaff || assignedStaff === 'Unassigned';
 
-    const pickup = await Pickup.findById(req.params.id);
+    const pickup = await findPickup(req.params.id);
     if (!pickup) {
       return res.status(404).json({ message: 'Pickup job not found.' });
     }
@@ -186,7 +181,7 @@ router.put('/:id/status', authenticate, async (req, res) => {
       return res.status(400).json({ message: 'Status or deliveryType is required.' });
     }
 
-    const pickup = await Pickup.findById(req.params.id);
+    const pickup = await findPickup(req.params.id);
     if (!pickup) {
       return res.status(404).json({ message: 'Pickup job not found.' });
     }
