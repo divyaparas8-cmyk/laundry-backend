@@ -314,13 +314,19 @@ router.get('/dashboard', authenticate, requirePermission('view_reports'), async 
     // Home Service Analytics
     const totalPickups = pickups.length;
     const completedPickups = pickups.filter(p => p.status === 'Completed').length;
+    const pendingPickups = Math.max(0, totalPickups - completedPickups);
     const totalDeliveries = deliveries.length;
+    const completedDeliveries = deliveries.filter(d => d.status === 'Delivered').length;
+    const pendingDeliveries = deliveries.filter(d => d.status !== 'Delivered' && d.status !== 'Failed').length;
     const failedDeliveries = deliveries.filter(d => d.status === 'Failed').length;
 
     const logisticsAnalytics = {
       totalPickups,
       completedPickups,
+      pendingPickups,
       totalDeliveries,
+      completedDeliveries,
+      pendingDeliveries,
       failedDeliveries
     };
 
@@ -368,10 +374,36 @@ router.get('/dashboard', authenticate, requirePermission('view_reports'), async 
     const todayOrders = orders.filter(o => o.date === todayStr);
     const todayPayments = payments.filter(p => p.date === todayStr);
 
+    const todayPickups = pickups.filter(p => {
+      const pDate = p.pickupDate || (p.createdAt ? new Date(p.createdAt).toISOString().split('T')[0] : '');
+      return pDate === todayStr;
+    });
+    const todayDeliveries = deliveries.filter(d => {
+      const dDate = d.deliveryDate || (d.createdAt ? new Date(d.createdAt).toISOString().split('T')[0] : '');
+      return dDate === todayStr;
+    });
+
+    const pickupsAssignedToday = todayPickups.length;
+    const pickupsCompletedToday = todayPickups.filter(p => p.status === 'Completed').length;
+    const pickupsPendingToday = Math.max(0, pickupsAssignedToday - pickupsCompletedToday);
+
+    const deliveriesAssignedToday = todayDeliveries.length;
+    const deliveriesCompletedToday = todayDeliveries.filter(d => d.status === 'Delivered').length;
+    const deliveriesPendingToday = todayDeliveries.filter(d => d.status !== 'Delivered' && d.status !== 'Failed').length;
+
     const daily = {
       revenueToday: todayOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0),
       ordersToday: todayOrders.length,
-      paymentsReceived: todayPayments.reduce((sum, p) => sum + (p.amount || 0), 0)
+      paymentsReceived: todayPayments.reduce((sum, p) => sum + (p.amount || 0), 0),
+      pickupsAssignedToday,
+      pickupsCompletedToday,
+      pickupsPendingToday,
+      deliveriesAssignedToday,
+      deliveriesCompletedToday,
+      deliveriesPendingToday,
+      totalTasksToday: pickupsAssignedToday + deliveriesAssignedToday,
+      totalCompletedToday: pickupsCompletedToday + deliveriesCompletedToday,
+      totalPendingToday: pickupsPendingToday + deliveriesPendingToday
     };
 
     const monthly = {
@@ -944,6 +976,232 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
            sales: totalSales
          };
        });
+    }
+    else if (reportType === 'driver_daily_report') {
+       let driverQuery = {};
+       if (req.targetBranchObj) {
+         driverQuery.branch = req.targetBranchObj.name;
+       } else if (req.targetBranchId) {
+         const Branch = require('../models/Branch');
+         const branchObj = await Branch.findById(req.targetBranchId);
+         if (branchObj) driverQuery.branch = branchObj.name;
+       }
+
+       let drivers = await Driver.find(driverQuery).populate({ path: 'user', populate: { path: 'branch branches' } });
+       if (parameter && parameter !== 'All') {
+         drivers = drivers.filter(d => d.driverName === parameter);
+       }
+
+       const pFilter = applyDateFilter(start, end, 'pickupDate');
+       const dFilter = applyDateFilter(start, end, 'deliveryDate');
+
+       const periodPickups = await Pickup.find(applyBranchFilter(req, pFilter));
+       const periodDeliveries = await Delivery.find(applyBranchFilter(req, dFilter));
+
+       const dateDisplay = (start && end && start === end)
+         ? start
+         : (start && end ? `${start} to ${end}` : (start || end || 'All Dates'));
+
+       const driverRows = drivers.map(d => {
+         let branchName = d.branch || 'Home Service';
+         if (/shoe|shoes|carpet/i.test(branchName)) {
+           branchName = 'Home Service';
+         }
+         if (d.user && d.user.branch && d.user.branch.name) {
+           const ubName = d.user.branch.name;
+           if (!/shoe|shoes|carpet/i.test(ubName)) {
+             branchName = ubName;
+           }
+         }
+
+         const dPickups = periodPickups.filter(p => p.assignedStaff === d.driverName);
+         const dDeliveries = periodDeliveries.filter(del => del.assignedStaff === d.driverName);
+
+         const pickupsAssigned = dPickups.length;
+         const pickupsCompleted = dPickups.filter(p => p.status === 'Completed').length;
+         const pickupsPending = Math.max(0, pickupsAssigned - pickupsCompleted);
+
+         const deliveriesAssigned = dDeliveries.length;
+         const deliveriesCompleted = dDeliveries.filter(del => del.status === 'Delivered').length;
+         const deliveriesPending = dDeliveries.filter(del => del.status !== 'Delivered' && del.status !== 'Failed').length;
+
+         const totalTasks = pickupsAssigned + deliveriesAssigned;
+         const completedTasks = pickupsCompleted + deliveriesCompleted;
+         const pendingTasks = pickupsPending + deliveriesPending;
+
+         return {
+           id: d._id,
+           driverName: d.driverName,
+           branch: branchName,
+           date: dateDisplay,
+           totalPickups: pickupsAssigned,
+           pickupsCompleted,
+           pickupsPending,
+           totalDeliveries: deliveriesAssigned,
+           deliveriesCompleted,
+           deliveriesPending,
+           totalTasks,
+           completedTasks,
+           pendingTasks
+         };
+       });
+
+       const totalPickupsAssigned = driverRows.reduce((s, r) => s + r.totalPickups, 0);
+       const totalPickupsCompleted = driverRows.reduce((s, r) => s + r.pickupsCompleted, 0);
+       const totalPickupsPending = driverRows.reduce((s, r) => s + r.pickupsPending, 0);
+       const totalDeliveriesAssigned = driverRows.reduce((s, r) => s + r.totalDeliveries, 0);
+       const totalDeliveriesCompleted = driverRows.reduce((s, r) => s + r.deliveriesCompleted, 0);
+       const totalDeliveriesPending = driverRows.reduce((s, r) => s + r.deliveriesPending, 0);
+       const totalAllTasks = totalPickupsAssigned + totalDeliveriesAssigned;
+       const totalAllCompleted = totalPickupsCompleted + totalDeliveriesCompleted;
+       const totalAllPending = totalPickupsPending + totalDeliveriesPending;
+
+       const summaryRow = {
+         id: 'TOTAL',
+         driverName: 'TOTAL',
+         branch: 'All Branches',
+         date: dateDisplay,
+         totalPickups: totalPickupsAssigned,
+         pickupsCompleted: totalPickupsCompleted,
+         pickupsPending: totalPickupsPending,
+         totalDeliveries: totalDeliveriesAssigned,
+         deliveriesCompleted: totalDeliveriesCompleted,
+         deliveriesPending: totalDeliveriesPending,
+         totalTasks: totalAllTasks,
+         completedTasks: totalAllCompleted,
+         pendingTasks: totalAllPending,
+         isTotalRow: true
+       };
+
+       data = driverRows.length > 0 ? [...driverRows, summaryRow] : [summaryRow];
+    }
+    else if (reportType === 'home_delivery_report') {
+       const baseOrderFilter = {
+         $or: [
+           { deliveryType: 'Home Delivery' },
+           { deliveryDate: { $exists: true, $ne: '' } }
+         ]
+       };
+       const filterWithDate = applyDateFilter(start, end, 'deliveryDate', baseOrderFilter);
+       const orderFilterDeliv = applyBranchFilter(req, filterWithDate);
+
+       const orders = await Order.find(orderFilterDeliv).populate('customer').lean();
+       const orderNumbers = orders.map(o => o.number).filter(Boolean);
+       const deliveries = await Delivery.find({ orderNumber: { $in: orderNumbers } }).lean();
+
+       const delivMap = {};
+       deliveries.forEach(d => {
+         if (d.orderNumber) delivMap[d.orderNumber] = d;
+       });
+
+       const rows = orders.map(o => {
+         const c = o.customer || {};
+         const validCustNo = (c.customerNo && c.customerNo !== 'Auto-generated') ? c.customerNo : '';
+         const custIdStr = c._id ? c._id.toString() : '';
+         const displayCustomerId = validCustNo ? `CUS-${validCustNo}` : (custIdStr ? `CUS-${custIdStr.slice(-4).toUpperCase()}` : 'CUS-N/A');
+
+         const dDoc = delivMap[o.number] || {};
+         const isPaid = o.paymentStatus === 'Paid';
+         const isPartial = o.paymentStatus === 'Partial';
+         const total = Number(o.totalAmount || o.amount || 0);
+         const paid = Number(o.amountPaid || (isPaid ? total : 0));
+         const unpaid = Math.max(0, total - paid);
+
+         let paymentStatusDisplay = 'Unpaid';
+         let paymentStatusRaw = 'Unpaid';
+         if (isPaid) {
+           paymentStatusDisplay = 'Paid';
+           paymentStatusRaw = 'Paid';
+         } else if (isPartial && paid > 0) {
+           paymentStatusDisplay = `Partial (Unpaid: ${unpaid.toFixed(3)})`;
+           paymentStatusRaw = 'Partial';
+         } else {
+           paymentStatusDisplay = 'Unpaid';
+           paymentStatusRaw = 'Unpaid';
+         }
+
+         const isSubscribed = Boolean(c.isSubscriber || Number(c.insuranceAmount || 0) >= 20);
+         const subscriptionStatus = isSubscribed ? 'Subscribed ⭐' : 'Unsubscribed';
+
+         const addressStr = dDoc.address || [c.street, c.partNo ? `Block ${c.partNo}` : '', c.jadda ? `Jadda ${c.jadda}` : '', c.houseNo ? `House ${c.houseNo}` : ''].filter(Boolean).join(', ') || 'Home Delivery';
+         const areaStr = dDoc.areaName || c.areaName || '—';
+         const driverStr = dDoc.assignedStaff || 'Unassigned';
+
+         return {
+           id: o._id,
+           date: o.deliveryDate || o.date,
+           customerName: o.customerName || c.name || 'Unknown',
+           customerId: displayCustomerId,
+           invoiceNumber: o.number,
+           paymentStatus: paymentStatusDisplay,
+           paymentStatusRaw: paymentStatusRaw,
+           totalAmount: total,
+           amountPaid: paid,
+           unpaidAmount: unpaid,
+           homeDeliveryDetails: `${areaStr} | ${addressStr} (Driver: ${driverStr})`,
+           address: addressStr,
+           area: areaStr,
+           driver: driverStr,
+           subscriptionStatus: subscriptionStatus,
+           isSubscriber: isSubscribed
+         };
+       });
+
+       let filteredRows = rows;
+       if (parameter && parameter !== 'All') {
+         if (parameter === 'Paid') filteredRows = rows.filter(r => r.paymentStatusRaw === 'Paid');
+         else if (parameter === 'Unpaid') filteredRows = rows.filter(r => r.paymentStatusRaw === 'Unpaid');
+         else if (parameter === 'Partial') filteredRows = rows.filter(r => r.paymentStatusRaw === 'Partial');
+         else if (parameter === 'Subscribed') filteredRows = rows.filter(r => r.isSubscriber);
+         else if (parameter === 'Unsubscribed') filteredRows = rows.filter(r => !r.isSubscriber);
+       }
+
+       data = filteredRows.sort((a, b) => b.date.localeCompare(a.date));
+    }
+    else if (reportType === 'subscriber_report') {
+       let customers = await Customer.find(applyBranchFilter(req, {}, true)).lean();
+       const customerIds = customers.map(c => c._id);
+       const orderCounts = await Order.aggregate([
+         { $match: { customer: { $in: customerIds } } },
+         { $group: { _id: '$customer', count: { $sum: 1 }, totalSpent: { $sum: '$totalAmount' } } }
+       ]);
+       const statsMap = {};
+       orderCounts.forEach(oc => {
+         if (oc._id) statsMap[oc._id.toString()] = { count: oc.count, totalSpent: oc.totalSpent || 0 };
+       });
+
+       const allRows = customers.map(c => {
+         const cId = c._id.toString();
+         const validCustNo = (c.customerNo && c.customerNo !== 'Auto-generated') ? c.customerNo : '';
+         const displayCustomerId = validCustNo ? `CUS-${validCustNo}` : `CUS-${cId.slice(-4).toUpperCase()}`;
+
+         const isSubscribed = Boolean(c.isSubscriber || Number(c.insuranceAmount || 0) >= 20);
+         const cStats = statsMap[cId] || { count: c.invoicesCount || 0, totalSpent: c.totalSpent || 0 };
+
+         return {
+           id: c._id,
+           customerId: displayCustomerId,
+           name: c.name,
+           phone: c.phone,
+           area: c.areaName || '—',
+           subscriptionStatus: isSubscribed ? 'Subscribed' : 'Unsubscribed',
+           isSubscriber: isSubscribed,
+           page: isSubscribed ? 1 : 2,
+           pageSection: isSubscribed ? 'Page 1: Subscribed Customers' : 'Page 2: Unsubscribed Customers',
+           totalOrders: cStats.count,
+           totalSpent: cStats.totalSpent,
+           balance: c.balance || 0,
+           registered: c.registrationDate || c.createdAt
+         };
+       });
+
+       if (parameter === 'Subscribed') {
+         data = allRows.filter(r => r.isSubscriber);
+       } else if (parameter === 'Unsubscribed') {
+         data = allRows.filter(r => !r.isSubscriber);
+       } else {
+         data = allRows.sort((a, b) => (b.isSubscriber ? 1 : 0) - (a.isSubscriber ? 1 : 0));
+       }
     }
     else if (reportType === 'workshop_perf') {
        const allUsers = await User.find({}).populate('role');
