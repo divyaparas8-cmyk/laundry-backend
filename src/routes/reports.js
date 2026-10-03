@@ -20,14 +20,28 @@ const resolveBranch = require('../utils/resolveBranch');
 // Helper to attach targetBranchId and targetBranchObj to req
 const attachBranchContext = async (req) => {
   const queryBranch = req.query.branchId || req.headers['x-selected-branch'] || req.headers['x-branch-id'];
-  if (queryBranch && queryBranch !== 'All' && queryBranch !== 'all' && queryBranch !== 'undefined' && queryBranch !== 'null') {
-    const branchDoc = await resolveBranch(queryBranch);
+  const userRole = (req.user && req.user.role && req.user.role.name) ? req.user.role.name : (req.user && req.user.role ? String(req.user.role) : '');
+  const isSuperAdmin = userRole === 'Super Admin';
+
+  const qbStr = String(queryBranch || '').trim();
+
+  if (qbStr === 'All' || qbStr === 'all') {
+    // Explicitly requested All Branches
+    req.targetBranchId = null;
+    req.targetBranchObj = null;
+  } else if (qbStr && qbStr !== 'undefined' && qbStr !== 'null') {
+    const branchDoc = await resolveBranch(qbStr);
     req.targetBranchObj = branchDoc;
     req.targetBranchId = branchDoc ? branchDoc._id : null;
-  } else if (req.user && req.user.role !== 'Super Admin' && req.user.branch) {
-    req.targetBranchId = req.user.branch;
-    const Branch = require('../models/Branch');
-    req.targetBranchObj = await Branch.findById(req.user.branch);
+  } else if (req.user && !isSuperAdmin && req.user.branch) {
+    const bId = req.user.branch._id || req.user.branch;
+    req.targetBranchId = bId;
+    if (req.user.branch.name) {
+      req.targetBranchObj = req.user.branch;
+    } else {
+      const Branch = require('../models/Branch');
+      req.targetBranchObj = await Branch.findById(bId);
+    }
   } else {
     req.targetBranchId = null;
     req.targetBranchObj = null;
@@ -35,35 +49,79 @@ const attachBranchContext = async (req) => {
 };
 
 // Helper to apply branch filter based on user role and query parameter
-const applyBranchFilter = (req, baseFilter = {}, isUser = false) => {
-  const targetId = req.targetBranchId;
-  const field = isUser ? 'branch' : 'branchId';
+const applyBranchFilter = (req, baseFilter = {}, isCustomerOrUser = false) => {
+  const rawId = req.targetBranchId;
+  const targetId = rawId ? (rawId._id || rawId) : null;
 
-  if (targetId) {
-    if (isUser) {
-      return { ...baseFilter, branch: targetId };
-    }
-    return {
-      ...baseFilter,
+  if (!targetId) return baseFilter;
+
+  const targetIdStr = String(targetId).trim();
+  const validObjectId = mongoose.Types.ObjectId.isValid(targetIdStr)
+    ? new mongoose.Types.ObjectId(targetIdStr)
+    : null;
+
+  if (!validObjectId) return baseFilter;
+
+  if (isCustomerOrUser) {
+    const branchMatch = {
       $or: [
-        { branchId: targetId },
-        { branch: targetId },
-        { sharedBranches: targetId },
-        { transferredTo: targetId }
+        { branch: validObjectId },
+        { branch: null },
+        { branch: { $exists: false } }
+      ]
+    };
+    if (baseFilter.$or) {
+      const { $or, ...rest } = baseFilter;
+      return { ...rest, $and: [{ $or }, branchMatch] };
+    }
+    if (baseFilter.$and) {
+      return { ...baseFilter, $and: [...baseFilter.$and, branchMatch] };
+    }
+    return { ...baseFilter, ...branchMatch };
+  }
+
+  const branchCondition = {
+    $or: [
+      { branchId: validObjectId },
+      { branch: validObjectId },
+      { sharedBranches: validObjectId },
+      { transferredTo: validObjectId }
+    ]
+  };
+
+  if (baseFilter.$or) {
+    const { $or, ...rest } = baseFilter;
+    return {
+      ...rest,
+      $and: [
+        { $or },
+        branchCondition
       ]
     };
   }
 
-  return baseFilter;
+  if (baseFilter.$and) {
+    return {
+      ...baseFilter,
+      $and: [...baseFilter.$and, branchCondition]
+    };
+  }
+
+  return {
+    ...baseFilter,
+    ...branchCondition
+  };
 };
 
 // Helper for date range filter
 const applyDateFilter = (start, end, dateField = 'date', baseFilter = {}) => {
   const filter = { ...baseFilter };
-  if (start || end) {
+  const s = String(start || '').trim();
+  const e = String(end || '').trim();
+  if (s || e) {
     filter[dateField] = {};
-    if (start) filter[dateField].$gte = start;
-    if (end) filter[dateField].$lte = end;
+    if (s) filter[dateField].$gte = s;
+    if (e) filter[dateField].$lte = e;
   }
   return filter;
 };
@@ -370,31 +428,37 @@ router.get('/dashboard', authenticate, requirePermission('view_reports'), async 
       };
     });
 
-    const todayStr = new Date().toISOString().split('T')[0];
-    const todayOrders = orders.filter(o => o.date === todayStr);
-    const todayPayments = payments.filter(p => p.date === todayStr);
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    
+    // For daily operations snapshot: query today's actual data so it isn't lost if period is in the past
+    const todayOrdersAll = await Order.find(applyBranchFilter(req, { date: todayStr }));
+    const todayPaymentsAll = await Payment.find(applyBranchFilter(req, { date: todayStr }));
+    const todayPickupsAll = await Pickup.find(applyBranchFilter(req, {
+      $or: [
+        { pickupDate: todayStr },
+        { createdAt: { $gte: new Date(todayStr + 'T00:00:00.000Z'), $lte: new Date(todayStr + 'T23:59:59.999Z') } }
+      ]
+    }));
+    const todayDeliveriesAll = await Delivery.find(applyBranchFilter(req, {
+      $or: [
+        { deliveryDate: todayStr },
+        { createdAt: { $gte: new Date(todayStr + 'T00:00:00.000Z'), $lte: new Date(todayStr + 'T23:59:59.999Z') } }
+      ]
+    }));
 
-    const todayPickups = pickups.filter(p => {
-      const pDate = p.pickupDate || (p.createdAt ? new Date(p.createdAt).toISOString().split('T')[0] : '');
-      return pDate === todayStr;
-    });
-    const todayDeliveries = deliveries.filter(d => {
-      const dDate = d.deliveryDate || (d.createdAt ? new Date(d.createdAt).toISOString().split('T')[0] : '');
-      return dDate === todayStr;
-    });
-
-    const pickupsAssignedToday = todayPickups.length;
-    const pickupsCompletedToday = todayPickups.filter(p => p.status === 'Completed').length;
+    const pickupsAssignedToday = todayPickupsAll.length;
+    const pickupsCompletedToday = todayPickupsAll.filter(p => p.status === 'Completed').length;
     const pickupsPendingToday = Math.max(0, pickupsAssignedToday - pickupsCompletedToday);
 
-    const deliveriesAssignedToday = todayDeliveries.length;
-    const deliveriesCompletedToday = todayDeliveries.filter(d => d.status === 'Delivered').length;
-    const deliveriesPendingToday = todayDeliveries.filter(d => d.status !== 'Delivered' && d.status !== 'Failed').length;
+    const deliveriesAssignedToday = todayDeliveriesAll.length;
+    const deliveriesCompletedToday = todayDeliveriesAll.filter(d => d.status === 'Delivered').length;
+    const deliveriesPendingToday = todayDeliveriesAll.filter(d => d.status !== 'Delivered' && d.status !== 'Failed').length;
 
     const daily = {
-      revenueToday: todayOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0),
-      ordersToday: todayOrders.length,
-      paymentsReceived: todayPayments.reduce((sum, p) => sum + (p.amount || 0), 0),
+      revenueToday: todayOrdersAll.reduce((sum, o) => sum + (o.totalAmount || 0), 0),
+      ordersToday: todayOrdersAll.length,
+      paymentsReceived: todayPaymentsAll.reduce((sum, p) => sum + (p.amount || 0), 0),
       pickupsAssignedToday,
       pickupsCompletedToday,
       pickupsPendingToday,
@@ -456,18 +520,22 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
     await attachBranchContext(req);
     const { reportType, category, parameter, start, end } = req.query;
     const orderFilter = applyBranchFilter(req, applyDateFilter(start, end, 'date'));
-    
     let data = [];
     
     if (reportType === 'branch_sales') {
        const orders = await Order.find(applyDateFilter(start, end, 'date')).populate('branchId');
        const groups = {};
+       const userRole = (req.user && req.user.role && req.user.role.name) ? req.user.role.name : (req.user && req.user.role ? String(req.user.role) : '');
+       const isSuperAdmin = userRole === 'Super Admin';
+       const userBranchId = req.user?.branch?._id?.toString() || req.user?.branch?.toString() || '';
+
        orders.forEach(o => {
          const bName = o.branchId ? o.branchId.name : 'Unknown';
+         const oBranchId = o.branchId ? (o.branchId._id ? o.branchId._id.toString() : o.branchId.toString()) : '';
          if (req.targetBranchObj && bName.toLowerCase() !== req.targetBranchObj.name.toLowerCase()) {
             return;
          }
-         if (req.user.role !== 'Super Admin' && req.user.branch !== (o.branchId && o.branchId._id.toString())) {
+         if (!isSuperAdmin && userBranchId && userBranchId !== oBranchId) {
             return;
          }
          if (parameter && parameter !== 'All' && bName !== parameter) return;
@@ -484,16 +552,17 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
        const orders = await Order.find(orderFilter);
        const groups = {};
        orders.forEach(o => {
-         if (!groups[o.date]) {
-           groups[o.date] = { date: o.date, count: 0, subtotal: 0, discount: 0, tax: 0, total: 0 };
+         const oDate = o.date || (o.createdAt ? new Date(o.createdAt).toISOString().slice(0, 10) : 'Unknown');
+         if (!groups[oDate]) {
+           groups[oDate] = { date: oDate, count: 0, subtotal: 0, discount: 0, tax: 0, total: 0 };
          }
-         groups[o.date].count += 1;
-         groups[o.date].subtotal += (Number(o.amount) || 0);
-         groups[o.date].discount += (Number(o.discountAmount) || 0);
-         groups[o.date].tax += (Number(o.tax) || 0);
-         groups[o.date].total += (Number(o.totalAmount) || 0);
+         groups[oDate].count += 1;
+         groups[oDate].subtotal += (Number(o.amount) || 0);
+         groups[oDate].discount += (Number(o.discountAmount) || 0);
+         groups[oDate].tax += (Number(o.tax) || 0);
+         groups[oDate].total += (Number(o.totalAmount) || 0);
        });
-       data = Object.values(groups).sort((a, b) => b.date.localeCompare(a.date));
+       data = Object.values(groups).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     }
     else if (reportType === 'sales_detail') {
        const orders = await Order.find(orderFilter);
@@ -504,10 +573,10 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
          if (parameter === 'Normal' && isExpress) return;
 
          if (o.itemDetails) {
-           o.itemDetails.forEach(it => {
+           o.itemDetails.forEach((it, idx) => {
              if (parameter && parameter !== 'All' && parameter !== 'Express' && parameter !== 'Normal' && it.name !== parameter) return;
              data.push({
-               id: `${o.id}-${it.name}`,
+               id: `${o._id || o.id}-${it._id || it.name || idx}-${idx}`,
                orderNo: o.number,
                customerName: o.customerName,
                date: o.date,
@@ -522,13 +591,31 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
        });
     }
     else if (reportType === 'payment_methods') {
+       const orders = await Order.find(orderFilter);
        const payments = await Payment.find(applyBranchFilter(req, applyDateFilter(start, end, 'date')));
        const groups = {};
-       payments.forEach(p => {
-         if (!groups[p.method]) groups[p.method] = { method: p.method, count: 0, collected: 0 };
-         groups[p.method].count += 1;
-         groups[p.method].collected += (Number(p.amount) || 0);
+
+       const recordMethod = (method, amount) => {
+         const m = normalizePaymentMethod(method);
+         if (!groups[m]) groups[m] = { method: m, count: 0, collected: 0 };
+         groups[m].count += 1;
+         groups[m].collected += (Number(amount) || 0);
+       };
+
+       orders.forEach(o => {
+         const isPaid = o.paymentStatus === 'Paid';
+         const paid = Number(o.amountPaid || (isPaid ? o.totalAmount : 0)) || 0;
+         const m = o.paymentMethod || (isPaid ? 'Cash' : 'Credit');
+         recordMethod(m, paid > 0 ? paid : (o.totalAmount || 0));
        });
+
+       payments.forEach(p => {
+         const isAlreadyInOrders = p.order && orders.some(o => o._id.toString() === p.order.toString());
+         if (!isAlreadyInOrders) {
+           recordMethod(p.method, p.amount);
+         }
+       });
+
        data = Object.values(groups);
     }
     else if (reportType === 'customer_list') {
@@ -633,12 +720,18 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
          id: `DEL-${d._id}`, reqId: d.deliveryId || `DEL-${d._id}`, type: 'Delivery', 
          customer: d.customer, date: d.deliveryDate, driver: d.assignedStaff || 'Unassigned', status: d.status 
        }));
-       data = items.sort((a, b) => b.date.localeCompare(a.date));
+       data = items.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     }
     else if (reportType === 'user_sales') {
        const orders = await Order.find(orderFilter);
        const expenses = await Expense.find(applyBranchFilter(req, applyDateFilter(start, end, 'date')));
-       const customers = await Customer.find(applyBranchFilter(req, applyDateFilter(start, end, 'createdAt')));
+       let custDateFilter = {};
+       if (start || end) {
+         custDateFilter.createdAt = {};
+         if (start) custDateFilter.createdAt.$gte = new Date(start + 'T00:00:00.000Z');
+         if (end) custDateFilter.createdAt.$lte = new Date(end + 'T23:59:59.999Z');
+       }
+       const customers = await Customer.find(applyBranchFilter(req, custDateFilter, true));
 
        const groups = {};
        const getGroup = (name) => {
@@ -1078,12 +1171,26 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
     else if (reportType === 'home_delivery_report') {
        const baseOrderFilter = {
          $or: [
-           { deliveryType: 'Home Delivery' },
+           { deliveryType: /home/i },
            { deliveryDate: { $exists: true, $ne: '' } }
          ]
        };
-       const filterWithDate = applyDateFilter(start, end, 'deliveryDate', baseOrderFilter);
-       const orderFilterDeliv = applyBranchFilter(req, filterWithDate);
+       let dateCondition = {};
+       if (start || end) {
+         dateCondition = {
+           $or: [
+             applyDateFilter(start, end, 'date'),
+             applyDateFilter(start, end, 'deliveryDate')
+           ]
+         };
+       }
+       const combinedFilter = {
+         $and: [
+           baseOrderFilter,
+           ...(start || end ? [dateCondition] : [])
+         ]
+       };
+       const orderFilterDeliv = applyBranchFilter(req, combinedFilter);
 
        const orders = await Order.find(orderFilterDeliv).populate('customer').lean();
        const orderNumbers = orders.map(o => o.number).filter(Boolean);
@@ -1156,7 +1263,7 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
          else if (parameter === 'Unsubscribed') filteredRows = rows.filter(r => !r.isSubscriber);
        }
 
-       data = filteredRows.sort((a, b) => b.date.localeCompare(a.date));
+       data = filteredRows.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     }
     else if (reportType === 'subscriber_report') {
        let customers = await Customer.find(applyBranchFilter(req, {}, true)).lean();
@@ -1271,6 +1378,112 @@ router.get('/generate', authenticate, requirePermission('view_reports'), async (
          }
        });
        data = Object.values(groups).sort((a, b) => b.qty - a.qty);
+    }
+    else if (reportType === 'carpet_blanket_report' || reportType === 'carpets_and_blankets') {
+       const orders = await Order.find(orderFilter)
+         .populate('customer')
+         .populate('branchId')
+         .sort({ date: -1, createdAt: -1 })
+         .lean();
+
+       const rows = orders.map((o) => {
+         const c = o.customer || {};
+         const validCustNo = (c.customerNo && c.customerNo !== 'Auto-generated') ? c.customerNo : '';
+         const custIdStr = c._id ? c._id.toString() : '';
+         const displayCust = validCustNo || (custIdStr ? custIdStr.slice(-6) : '—');
+
+         const autoNo = o.number || '—';
+         const manualNo = o.manualNo || o.manualInvoiceNo || (o.notes && o.notes.match(/manual[:\s#]*([^\s,;]+)/i)?.[1]) || '—';
+
+         const isPaid = o.paymentStatus === 'Paid';
+         const total = Number(o.totalAmount || o.amount || 0);
+         const paid = Number(o.amountPaid !== undefined && o.amountPaid !== null ? o.amountPaid : (isPaid ? total : 0));
+
+         let carpetCount = 0;
+         let blanketCount = 0;
+         let bedSheetCount = 0;
+
+         (o.itemDetails || []).forEach((it) => {
+           const name = `${it.name || ''} ${it.nameAr || ''}`.toLowerCase();
+           const qty = Number(it.quantity) || 1;
+           if (/carpet|sajjad|rug|mat|سجاد|موكيت|سجادة/i.test(name)) {
+             carpetCount += qty;
+           } else if (/blanket|comforter|quilt|duvet|بطانية|بطانيه|لحاف|كمفرتر/i.test(name)) {
+             blanketCount += qty;
+           } else if (/bed\s*sheet|bedsheet|sheet|linen|شرشف|شراشف|غطاء\s*سرير|كفر/i.test(name)) {
+             bedSheetCount += qty;
+           }
+         });
+
+         const isSubscribed = Boolean(c.isSubscriber || Number(c.insuranceAmount || 0) >= 20);
+         const mVal = isSubscribed ? 1 : 0;
+
+         const area = c.areaName || o.areaName || '—';
+         const part = c.partNo || c.block || '—';
+         const street = c.street || '—';
+         const jaddah = c.jadda || '—';
+         const hom = c.houseNo || '—';
+         const floor = c.levelNo || c.floor || '—';
+         const flat = c.flatNo || '—';
+
+         // SR = branch name
+         const sr = (o.branchId && o.branchId.name) ? o.branchId.name : (o.branchName || (req.targetBranchObj ? req.targetBranchObj.name : '—'));
+
+         // Add number = PACI number
+         const addNo = c.paciNo || c.automaticAddressNo || '0';
+
+         return {
+           id: o._id,
+           cust: displayCust,
+           customerName: o.customerName || c.name || 'Unknown',
+           phone: c.phone || '—',
+           manualNo,
+           autoNo,
+           payed: paid,
+           k: carpetCount,
+           c: blanketCount,
+           besh: bedSheetCount,
+           m: mVal,
+           isSubscriber: isSubscribed,
+           area,
+           part,
+           street,
+           jaddah,
+           hom,
+           floor,
+           flat,
+           sr,
+           amount: total,
+           addNo,
+           status: o.status || 'Waiting',
+           paymentStatus: o.paymentStatus || 'Pending',
+           deliveryType: o.deliveryType || 'Home Delivery',
+           date: o.date || (o.createdAt ? new Date(o.createdAt).toISOString().slice(0, 10) : '')
+         };
+       });
+
+       let filteredRows = rows;
+       if (parameter && parameter !== 'All') {
+         if (parameter === 'Carpets & Blankets Only') {
+           filteredRows = rows.filter((r) => r.k > 0 || r.c > 0 || r.besh > 0);
+         } else if (parameter === 'Carpets Only (K)') {
+           filteredRows = rows.filter((r) => r.k > 0);
+         } else if (parameter === 'Blankets Only (C)') {
+           filteredRows = rows.filter((r) => r.c > 0);
+         } else if (parameter === 'Bed Sheets Only (Be&sh)') {
+           filteredRows = rows.filter((r) => r.besh > 0);
+         } else if (parameter === 'Subscribed (M)' || parameter === 'Subscribed Only (M)') {
+           filteredRows = rows.filter((r) => r.m === 1);
+         } else if (parameter === 'Paid' || parameter === 'Paid Only') {
+           filteredRows = rows.filter((r) => r.paymentStatus === 'Paid');
+         } else if (parameter === 'Unpaid' || parameter === 'Unpaid Only') {
+           filteredRows = rows.filter((r) => r.paymentStatus !== 'Paid');
+         } else if (parameter === 'Home Delivery Only') {
+           filteredRows = rows.filter((r) => r.deliveryType === 'Home Delivery');
+         }
+       }
+
+       data = filteredRows;
     }
     
     res.json({ data });

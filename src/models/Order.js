@@ -49,6 +49,16 @@ const orderSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+  manualNo: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  manualInvoiceNo: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   customer: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Customer',

@@ -1,0 +1,36 @@
+{
+  "number": "MIS-085",
+  "date": "2026-10-03",
+  "createdAt": "2026-10-03T06:52:09.555Z",
+  "branchId": "6a68799862bdc0474049b2a2",
+  "items": [
+    {
+      "name": "Carpet - 5×5m",
+      "nameAr": "سجاد",
+      "quantity": 1,
+      "unitPrice": 18.75,
+      "_id": "6ac0a619cf10f9ccdb1eba9a"
+    },
+    {
+      "name": "Single blanket",
+      "nameAr": "بطانية نفر",
+      "quantity": 1,
+      "unitPrice": 1,
+      "_id": "6ac0a619cf10f9ccdb1eba9b"
+    },
+    {
+      "name": "Bed Sheet",
+      "nameAr": "شرشف",
+      "quantity": 1,
+      "unitPrice": 0.75,
+      "_id": "6ac0a619cf10f9ccdb1eba9c"
+    },
+    {
+      "name": "Pillow Cover",
+      "nameAr": "وجه مخده",
+      "quantity": 1,
+      "unitPrice": 0.25,
+      "_id": "6ac0a619cf10f9ccdb1eba9d"
+    }
+  ]
+}
